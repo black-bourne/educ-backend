@@ -18,7 +18,7 @@ from django_ratelimit.decorators import ratelimit
 User = get_user_model()
 from accounts.tasks import send_otp_email
 
-@ratelimit(key='ip', rate='5/m', method='POST')  # 10 requests per minute per IP
+@ratelimit(key='ip', rate='5/m', method='POST')
 @csrf_exempt
 def login_view(request):
     if request.method != 'POST':
@@ -33,7 +33,6 @@ def login_view(request):
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-    # Authenticate the user
     user = authenticate(request, email=email, password=password)
     if user is None:
         return JsonResponse({'error': 'Invalid credentials'}, status=401)
@@ -84,20 +83,24 @@ def verify_otp(request):
     except jwt.InvalidTokenError:
         return JsonResponse({'error': 'Invalid token'}, status=401)
 
-    cached_otp = cache.get(f'otp_{user_id}')
+    cached_otp = cache.get(f'otp_{user_id}')   # TO be changed
     if cached_otp is None or cached_otp != otp:
         return JsonResponse({'error': 'Invalid or expired OTP'}, status=401)
 
     payload['is_2fa_verified'] = True
-    payload['exp'] = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=24)
+    payload['exp'] = datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=30)
     new_token = jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
 
-    cache.delete(f'otp_{user_id}')
-    return JsonResponse({'token': new_token})
+    # cache.delete(f'otp_{user_id}')
+
+    return JsonResponse({
+        'message': 'Login successful',
+        'token': new_token
+    })
 
 
 @csrf_exempt
-@ratelimit(key='ip', rate='5/h', method='POST')  # Limit to 5 requests per hour per IP
+@ratelimit(key='ip', rate='5/m', method='POST')  # Limit to 5 requests per hour per IP
 def reset_password_view(request):
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -106,7 +109,7 @@ def reset_password_view(request):
         data = json.loads(request.body)
         uidb64 = data.get("uidb64")
         token = data.get("token")
-        password = data.get("password")
+        password = data.get("new_password")
         validate_password(password)
         if not all([uidb64, token, password]):
             return JsonResponse({"error": "Missing required fields"}, status=400)
@@ -145,7 +148,7 @@ def request_reset_view(request):
         user = User.objects.get(email=email)
         token = default_token_generator.make_token(user)
         uid = urlsafe_base64_encode(force_bytes(user.pk))
-        reset_url = f"http://localhost:3000/reset/{uid}/{token}"
+        reset_url = f"http://localhost:3000/reset-password?uid={uid}&token={token}"
         html_message = f"""
         <html>
             <body style="font-family: Arial, sans-serif;">
