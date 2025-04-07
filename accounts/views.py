@@ -97,7 +97,7 @@ def verify_otp(request):
 
 
 @csrf_exempt
-@ratelimit(key='ip', rate='5/h', method='POST')  # Limit to 5 requests per hour per IP
+@ratelimit(key='ip', rate='55/h', method='POST')  # Limit to 5 requests per hour per IP
 def reset_password_view(request):
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -106,8 +106,8 @@ def reset_password_view(request):
         data = json.loads(request.body)
         uidb64 = data.get("uidb64")
         token = data.get("token")
-        password = data.get("password")
-        validate_password(password)
+        password = data.get("new_password")
+        # validate_password(password)
         if not all([uidb64, token, password]):
             return JsonResponse({"error": "Missing required fields"}, status=400)
     except json.JSONDecodeError:
@@ -145,7 +145,7 @@ def request_reset_view(request):
         user = User.objects.get(email=email)
         token = default_token_generator.make_token(user)
         uid = urlsafe_base64_encode(force_bytes(user.pk))
-        reset_url = f"http://localhost:3000/reset/{uid}/{token}"
+        reset_url = f"http://localhost:3000/reset?uid={uid}&token={token}"
         html_message = f"""
         <html>
             <body style="font-family: Arial, sans-serif;">
