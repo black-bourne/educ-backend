@@ -1,6 +1,5 @@
 from django.contrib.auth import get_user_model
 from django.db import models
-from django.db.models.fields import CharField
 
 User = get_user_model()
 
@@ -21,7 +20,7 @@ class SchoolClass(models.Model):
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='supervised_classes', limit_choices_to={'role': 'teacher'}
     )
     teachers = models.ManyToManyField(User, related_name='teaching_class') # multiple teachers teaching multiple classes
-
+    students = models.ManyToManyField(User, related_name='enrolled_classes', limit_choices_to={'role': 'student'})
 
     def __str__(self):
         return self.name
@@ -100,3 +99,23 @@ class Assignment(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class Submission(models.Model):
+    STATUS_CHOICES = (
+        ('submitted', 'Submitted'),
+        ('graded', 'Graded'),
+    )
+
+    assignment = models.ForeignKey('Assignment', on_delete=models.CASCADE, related_name='submissions')
+    student = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'student'})
+    file = models.FileField(upload_to='submissions/%Y/%m/%d/')
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='submitted')
+    score = models.PositiveIntegerField(null=True, blank=True)  # Out of 100, optional
+
+    class Meta:
+        unique_together = ('assignment', 'student')
+
+    def __str__(self):
+        return f"{self.student.first_name} - {self.assignment.title}"

@@ -22,6 +22,9 @@ SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 AUTH_PASSWORD_VALIDATORS = True
 
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # Application definition
 INSTALLED_APPS = [
     'corsheaders',
@@ -33,11 +36,12 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'accounts.apps.AccountsConfig',
-    'academics'
+    'academics',
 ]
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
+    'accounts.middleware.JWTAuthenticationMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
