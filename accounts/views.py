@@ -1,3 +1,5 @@
+import logging
+
 import jwt
 import datetime
 import json
@@ -14,18 +16,20 @@ from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.views.decorators.csrf import csrf_exempt
 from django.core.cache import cache
 from django_ratelimit.decorators import ratelimit
-
-User = get_user_model()
 from accounts.tasks import send_otp_email
 
-@ratelimit(key='ip', rate='5/m', method='POST')  # 10 requests per minute per IP
+logger = logging.getLogger(__name__)
+User = get_user_model()
+
+@ratelimit(key='ip', rate='5/m', method='POST')
 @csrf_exempt
 def login_view(request):
     if request.method != 'POST':
         return JsonResponse({'error': 'Only POST allowed'}, status=405)
-        # Check rate limit
+
     if getattr(request, 'limited', False):
         return JsonResponse({'error': 'Too many attempts, please try again later'}, status=429)
+
     try:
         data = json.loads(request.body)
         email = data.get('email')
@@ -33,22 +37,19 @@ def login_view(request):
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-    # Authenticate the user
     user = authenticate(request, email=email, password=password)
     if user is None:
         return JsonResponse({'error': 'Invalid credentials'}, status=401)
 
-    otp_code = secrets.token_hex(3).upper()  # Generates a 6-character hexadecimal code (e.g., "A1B2C3")
+    otp_code = secrets.token_hex(3).upper()
     cache_key = f'otp_{user.id}'
-    cache.set(cache_key, otp_code, timeout=300)  # 300 seconds = 5 minutes exp in redis
+    cache.set(cache_key, otp_code, timeout=300)
 
-    # Send the OTP via email
     try:
-        send_otp_email(email, otp_code) # celery
+        send_otp_email(email, otp_code)
     except Exception as e:
         return JsonResponse({'error': f'Failed to queue OTP email: {str(e)}'}, status=500)
 
-    # Generate JWT token
     payload = {
         'user_id': user.id,
         'email': user.email,
@@ -94,7 +95,6 @@ def verify_otp(request):
 
     cache.delete(f'otp_{user_id}')
     return JsonResponse({'token': new_token})
-
 
 @csrf_exempt
 @ratelimit(key='ip', rate='55/h', method='POST')  # Limit to 5 requests per hour per IP

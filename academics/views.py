@@ -1,33 +1,46 @@
 import json
+
+from django.core.cache import cache
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.http.response import HttpResponseForbidden
 from django.views.decorators.http import require_http_methods
-from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.csrf import csrf_exempt
 from django.utils.dateparse import parse_datetime
-from .models import Event, Assignment, SchoolClass, TeacherSubject, Submission
 
+from .models import Event, Assignment, SchoolClass, TeacherSubject, Submission, Announcement
+import logging
 
+logger = logging.getLogger(__name__)
+
+@csrf_exempt
 def calendar_events_view(request):
-    events = Event.objects.all()
+    cache_key = 'calendar_events'
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        return JsonResponse(cached_data, safe=False)
+
+    events = Event.objects.select_related('school_class').all()
     events_data = [
         {
             'title': event.title,
             'description': event.description,
             'start': event.start.isoformat(),
             'end': event.end.isoformat(),
-            'school_class': event.school_class,
+            'school_class': event.school_class.name if event.school_class else None,
             'allDay': event.allDay
         }
         for event in events
     ]
-    # safe=False allows returning a list
+    cache.set(cache_key, events_data, timeout=600)  # Cache for 10 minutes
     return JsonResponse(events_data, safe=False)
 
-from django.http import JsonResponse
-from .models import Announcement
-
 def announcements_view(request):
-    announcements = Announcement.objects.all()
+    cache_key = 'announcements'
+    cached_data = cache.get(cache_key)
+    if cached_data is not None:
+        return JsonResponse(cached_data, safe=False)
+
+    announcements = Announcement.objects.select_related('school_class').all()
     announcements_data = [
         {
             'title': announcement.title,
@@ -38,18 +51,19 @@ def announcements_view(request):
         }
         for announcement in announcements
     ]
+    cache.set(cache_key, announcements_data, timeout=600)
     return JsonResponse(announcements_data, safe=False)
 
 
-@ensure_csrf_cookie
+@csrf_exempt
 @require_http_methods(["GET", "POST"])
 def assignment_view(request):
+    logger.info(f"User role: {request.user.role}")
     if not request.user.is_authenticated:
-        return HttpResponseForbidden("Authentication required")
+        return JsonResponse({"error": "Authentication required"}, status=401)
 
     if request.method == "GET":
         if 'submission' in request.path:
-            # Fetch submissions for a specific assignment
             if request.user.role != "teacher":
                 return HttpResponseForbidden("Only teachers can view submissions")
             assignment_id = request.GET.get('assignment_id')
@@ -73,14 +87,18 @@ def assignment_view(request):
             except Assignment.DoesNotExist:
                 return HttpResponseBadRequest("Invalid assignment ID or not your assignment")
 
+        cache_key = f'assignments_{request.user.id}_{request.user.role}'
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return JsonResponse(cached_data)
+
         if request.user.role == "teacher":
-            assignments = Assignment.objects.filter(created_by=request.user).order_by('-created_at')
+            assignments = Assignment.objects.filter(created_by=request.user).select_related('classroom').order_by('-created_at')
         elif request.user.role == "student":
             student_class = SchoolClass.objects.filter(students=request.user).first()
             if not student_class:
                 return JsonResponse({"error": "No class assigned to this student"}, status=404)
-            assignments = Assignment.objects.filter(classroom=student_class).order_by('-created_at')
-            # submission status for students
+            assignments = Assignment.objects.filter(classroom=student_class).select_related('classroom').order_by('-created_at')
             data = []
             for assignment in assignments:
                 submission = assignment.submissions.filter(student=request.user).first()
@@ -96,6 +114,7 @@ def assignment_view(request):
                     'submission_status': submission.status if submission else None,
                     'submission_score': submission.score if submission else None,
                 })
+            cache.set(cache_key, {'assignments': data}, timeout=300)
             return JsonResponse({'assignments': data})
         else:
             return HttpResponseForbidden("Invalid role")
@@ -113,10 +132,58 @@ def assignment_view(request):
             }
             for assignment in assignments
         ]
+        cache.set(cache_key, {'assignments': data}, timeout=300)
         return JsonResponse({'assignments': data})
 
-
     elif request.method == "POST":
+        # Handle teacher creating assignment (for /api/assignments)
+        if not request.path.endswith('/submit'):
+            if request.user.role != "teacher":
+                return HttpResponseForbidden("Only teachers can create assignments")
+            try:
+                body = json.loads(request.body.decode('utf-8'))
+                title = body.get('title')
+                description = body.get('description', '')
+                subject = body.get('subject')
+                classroom_id = body.get('classroom')
+                due = parse_datetime(body.get('due'))
+
+                if not all([title, due, classroom_id, subject]):
+                    return HttpResponseBadRequest("Missing required fields: title, due, classroom, or subject")
+
+                classroom = SchoolClass.objects.get(id=classroom_id)
+                if request.user not in classroom.teachers.all():
+                    return HttpResponseForbidden("You are not assigned to this class")
+                if not TeacherSubject.objects.filter(teacher=request.user, subject=subject).exists():
+                    return HttpResponseForbidden("You are not assigned to teach this subject")
+
+                assignment = Assignment.objects.create(
+                    title=title,
+                    description=description,
+                    subject=subject,
+                    classroom=classroom,
+                    due=due,
+                    created_by=request.user,
+                )
+                data = {
+                    'id': assignment.id,
+                    'subject': assignment.subject,
+                    'title': assignment.title,
+                    'description': assignment.description,
+                    'due': assignment.due.isoformat(),
+                    'status': assignment.status,
+                    'classroom': assignment.classroom.id,
+                    'created_at': assignment.created_at.isoformat(),
+                }
+                return JsonResponse(data, status=201)
+            except json.JSONDecodeError:
+                return HttpResponseBadRequest("Invalid JSON format")
+            except SchoolClass.DoesNotExist:
+                return HttpResponseBadRequest("Invalid classroom ID")
+            except Exception as e:
+                return HttpResponseBadRequest(str(e))
+
+        # Handle student submitting assignment (for /api/assignments/submit)
         if request.path.endswith('/submit'):
             if request.user.role != "student":
                 return HttpResponseForbidden("Only students can submit assignments")
@@ -125,10 +192,9 @@ def assignment_view(request):
                 file = request.FILES.get('file')
                 if not all([assignment_id, file]):
                     return HttpResponseBadRequest("Missing assignment_id or file")
-                # File validation
                 if not file.name.endswith('.pdf'):
                     return HttpResponseBadRequest("Only PDF files are allowed")
-                if file.size > 5 * 1024 * 1024:  # 5MB limit
+                if file.size > 5 * 1024 * 1024:
                     return HttpResponseBadRequest("File size must not exceed 5MB")
                 assignment = Assignment.objects.get(id=assignment_id)
                 if request.user not in assignment.classroom.students.all():
@@ -149,53 +215,10 @@ def assignment_view(request):
 
             except Assignment.DoesNotExist:
                 return HttpResponseBadRequest("Invalid assignment ID")
-
             except Exception as e:
                 return HttpResponseBadRequest(str(e))
 
-        if request.user.role != "teacher":
-            return HttpResponseForbidden("Only teachers can create assignments")
-        try:
-            body = json.loads(request.body)
-            title = body.get('title')
-            description = body.get('description', '')
-            subject = body.get('subject')
-            classroom_id = body.get('classroom')
-            due = parse_datetime(body.get('due'))
-
-            if not all([title, due, classroom_id, subject]):
-                return HttpResponseBadRequest("Missing required fields: title, due, classroom, or subject")
-
-            classroom = SchoolClass.objects.get(id=classroom_id)
-            if request.user not in classroom.teachers.all():
-                return HttpResponseForbidden("You are not assigned to this class")
-            if not TeacherSubject.objects.filter(teacher=request.user, subject=subject).exists():
-                return HttpResponseForbidden("You are not assigned to teach this subject")
-
-            assignment = Assignment.objects.create(
-                title=title,
-                description=description,
-                subject=subject,
-                classroom=classroom,
-                due=due,
-                created_by=request.user,
-            )
-            data = {
-                'id': assignment.id,
-                'subject': assignment.subject,
-                'title': assignment.title,
-                'description': assignment.description,
-                'due': assignment.due.isoformat(),
-                'status': assignment.status,
-                'classroom': assignment.classroom.id,
-                'created_at': assignment.created_at.isoformat(),
-            }
-            return JsonResponse(data, status=201)
-        except SchoolClass.DoesNotExist:
-            return HttpResponseBadRequest("Invalid classroom ID")
-        except Exception as e:
-            return HttpResponseBadRequest(str(e))
-
+@csrf_exempt
 @require_http_methods(["GET"])
 def classes_view(request):
     if not request.user.is_authenticated:

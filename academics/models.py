@@ -3,43 +3,30 @@ from django.db import models
 
 User = get_user_model()
 
-
 class Grade(models.Model):
-    level = models.IntegerField(unique=True)
+    level = models.IntegerField(unique=True, db_index=True)  # Indexed for filtering
 
     def __str__(self):
         return f"Grade {self.level}"
 
-
 class SchoolClass(models.Model):
-    name = models.CharField(max_length=50, unique=True)
+    name = models.CharField(max_length=50, unique=True, db_index=True)  # Indexed for search
     capacity = models.PositiveIntegerField()
     grade = models.ForeignKey(Grade, on_delete=models.CASCADE, related_name='classes')
-    # Supervisor is a user (teacher) who oversees the class.
     supervisor = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='supervised_classes', limit_choices_to={'role': 'teacher'}
     )
-    teachers = models.ManyToManyField(User, related_name='teaching_class') # multiple teachers teaching multiple classes
+    teachers = models.ManyToManyField(User, related_name='teaching_class')
     students = models.ManyToManyField(User, related_name='enrolled_classes', limit_choices_to={'role': 'student'})
 
     def __str__(self):
         return self.name
 
-
-# Choices for who should see an announcement
-TARGET_ROLE_CHOICES = (
-    ('both', 'Both'),
-    ('teacher', 'Teacher'),
-    ('student', 'Student'),
-)
-
-# Model for Announcement
 class Announcement(models.Model):
-    title = models.CharField(max_length=200)
+    title = models.CharField(max_length=200, db_index=True)  # Indexed for search
     description = models.TextField()
-    date = models.DateTimeField(auto_now_add=True)
-    target_role = models.CharField(max_length=10, choices=TARGET_ROLE_CHOICES, default='both')
-    # an announcement can be linked to a specific class.
+    date = models.DateTimeField(auto_now_add=True, db_index=True)  # Indexed for filtering
+    target_role = models.CharField(max_length=10, choices=[('both', 'Both'), ('teacher', 'Teacher'), ('student', 'Student')], default='both')
     school_class = models.ForeignKey(
         SchoolClass, on_delete=models.CASCADE, null=True, blank=True, related_name='announcements'
     )
@@ -47,15 +34,12 @@ class Announcement(models.Model):
     def __str__(self):
         return self.title
 
-
-# Model for Event
 class Event(models.Model):
-    title = models.CharField(max_length=200)
+    title = models.CharField(max_length=200, db_index=True)  # Indexed for search
     description = models.TextField()
-    start = models.DateTimeField()
+    start = models.DateTimeField(db_index=True)  # Indexed for filtering
     end = models.DateTimeField()
     allDay = models.BooleanField(default=False)
-    # an event can be attached to a class.
     school_class = models.ForeignKey(
         SchoolClass, on_delete=models.CASCADE, null=True, blank=True, related_name='events'
     )
@@ -86,33 +70,29 @@ class Assignment(models.Model):
         ("pending", "Pending"),
         ("completed", "Completed")
     )
-
-    subject = models.CharField(choices=SubjectChoices, max_length=20,  default=SubjectChoices.MATHEMATICS)
-    title = models.CharField(max_length=200)
+    subject = models.CharField(choices=SubjectChoices, max_length=20, default=SubjectChoices.MATHEMATICS, db_index=True)  # Indexed for filtering
+    title = models.CharField(max_length=200, db_index=True)  # Indexed for search
     description = models.TextField(blank=True)
-    due = models.DateTimeField()
-    status = models.CharField(max_length=20, choices=ASSIGNMENT_STATUS, default='pending')
+    due = models.DateTimeField(db_index=True)  # Indexed for filtering
+    status = models.CharField(max_length=20, choices=ASSIGNMENT_STATUS, default='pending', db_index=True)  # Indexed for filtering
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='assignment')
     classroom = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, null=True, related_name='assignment')
-    created_at = models.DateField(auto_now_add=True)
-
+    created_at = models.DateField(auto_now_add=True, db_index=True)  # Indexed for ordering
 
     def __str__(self):
         return self.title
-
 
 class Submission(models.Model):
     STATUS_CHOICES = (
         ('submitted', 'Submitted'),
         ('graded', 'Graded'),
     )
-
     assignment = models.ForeignKey('Assignment', on_delete=models.CASCADE, related_name='submissions')
     student = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'student'})
     file = models.FileField(upload_to='submissions/%Y/%m/%d/')
-    submitted_at = models.DateTimeField(auto_now_add=True)
+    submitted_at = models.DateTimeField(auto_now_add=True, db_index=True)  # Indexed for ordering
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='submitted')
-    score = models.PositiveIntegerField(null=True, blank=True)  # Out of 100, optional
+    score = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         unique_together = ('assignment', 'student')

@@ -8,6 +8,8 @@ from django.dispatch.dispatcher import receiver
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 
+from educ_backend import settings
+
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
@@ -17,7 +19,7 @@ def send_password_reset_email(sender, instance, created, **kwargs):
         try:
             token = default_token_generator.make_token(instance)
             uid = urlsafe_base64_encode(force_bytes(instance.pk))
-            full_url = f"http://127.0.0.1:3000/reset/{uid}/{token}" # domain
+            full_url = f"http://127.0.0.1:3000/reset?uid={uid}&token={token}" # domain
             html_message = f"""
             <html>
                 <body style="font-family: Arial, sans-serif; color: #333;">
@@ -33,7 +35,7 @@ def send_password_reset_email(sender, instance, created, **kwargs):
             send_mail(
                 subject="Set Your Account Password",
                 message=f"Hi {instance.first_name},\n\nSet your password here: {full_url}",
-                from_email="noreply@localhost.com",
+                from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[instance.email],
                 html_message=html_message,
                 fail_silently=False,
